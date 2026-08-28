@@ -49,7 +49,3 @@ local/grade_notifier/
 ├── version.php            # Metadata versi plugin
 └── README.md
 ```
-
-## Lisensi
-
-GPL v3
