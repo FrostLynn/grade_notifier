@@ -5,82 +5,103 @@ defined('MOODLE_INTERNAL') || die();
 
 use core_user;
 
+/**
+ * Event observer for local_grade_notifier.
+ *
+ * @package    local_grade_notifier
+ * @copyright  2026
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
 class observer {
+
+    /**
+     * Triggered when a user is graded in Moodle gradebook.
+     *
+     * @param \core\event\user_graded $event
+     */
     public static function user_graded(\core\event\user_graded $event) {
         global $DB;
 
         try {
+            // Check if plugin is enabled.
+            $enabled = get_config('local_grade_notifier', 'enabled');
+            if ($enabled === false) {
+                $enabled = 1;
+            }
+            if (!$enabled) {
+                return;
+            }
+
             $gradedata = $event->get_grade();
             $gradeitem = $gradedata->grade_item;
 
-            // Pastikan hanya memproses nilai dari modul Quiz / Kuis
+            // Ensure event originates from a Quiz module.
             if ($gradeitem->itemtype !== 'mod' || $gradeitem->itemmodule !== 'quiz') {
                 return;
             }
 
-            // Dapatkan kuis terkait
+            // Skip if final grade is null (e.g. essay questions awaiting manual teacher grading).
+            if ($gradedata->finalgrade === null) {
+                return;
+            }
+
+            $finalgrade = round((float)$gradedata->finalgrade, 2);
+            $maxgrade   = round((float)$gradeitem->grademax, 2);
+            $gradepass  = isset($gradeitem->gradepass) ? (float)$gradeitem->gradepass : 0.0;
+
+            // Check if admin configured to only notify on passing grade.
+            $onlypassing = get_config('local_grade_notifier', 'only_passing_grades');
+            if ($onlypassing && $gradepass > 0 && $finalgrade < $gradepass) {
+                return;
+            }
+
+            // Retrieve quiz record.
             $quiz = $DB->get_record('quiz', ['id' => $gradeitem->iteminstance]);
             if (!$quiz) {
                 return;
             }
 
-            // Dapatkan kursus
+            // Retrieve course record.
             $course = $DB->get_record('course', ['id' => $gradeitem->courseid]);
-            $coursename = !empty($course->fullname) ? format_string($course->fullname) : 'Kursus';
-
-            // Dapatkan user peserta
-            $user = core_user::get_user($gradedata->userid);
-            if (!$user) {
+            if (!$course) {
                 return;
             }
 
-            // Ambil nilai final yang sudah tuntas dihitung di gradebook
-            $finalgrade = round((float)$gradedata->finalgrade, 2);
-            $maxgrade = round((float)$gradeitem->grademax, 2);
+            // Retrieve student record.
+            $user = core_user::get_user($gradedata->userid);
+            if (!$user || $user->deleted) {
+                return;
+            }
 
-            // Ambil email atasan dari Custom Profile Field
-            $sql = "SELECT d.data 
-                      FROM {user_info_data} d 
-                      JOIN {user_info_field} f ON d.fieldid = f.id 
-                     WHERE f.shortname = :shortname AND d.userid = :userid";
-            $supervisor_email = $DB->get_field_sql($sql, [
-                'shortname' => 'supervisor_email',
-                'userid'    => $user->id
+            // Check log to avoid duplicate notifications for identical grade.
+            $dbman = $DB->get_manager();
+            if ($dbman->table_exists('local_grade_notifier_logs')) {
+                $already_notified = $DB->record_exists('local_grade_notifier_logs', [
+                    'userid'      => $user->id,
+                    'quizid'      => $quiz->id,
+                    'gradeitemid' => $gradeitem->id,
+                    'finalgrade'  => $finalgrade,
+                ]);
+                if ($already_notified) {
+                    return;
+                }
+            }
+
+            // Queue Adhoc Task for asynchronous background execution.
+            $task = new \local_grade_notifier\task\send_notification_task();
+            $task->set_custom_data((object)[
+                'userid'       => (int)$user->id,
+                'courseid'     => (int)$course->id,
+                'quizid'       => (int)$quiz->id,
+                'gradeitemid'  => (int)$gradeitem->id,
+                'finalgrade'   => $finalgrade,
+                'maxgrade'     => $maxgrade,
+                'gradepass'    => $gradepass,
+                'timemodified' => !empty($gradedata->timemodified) ? (int)$gradedata->timemodified : time(),
             ]);
 
-            // Format teks
-            $quizname   = format_string($quiz->name);
-            $fullname   = fullname($user);
-            $gradedtime = !empty($gradedata->timemodified) ? userdate($gradedata->timemodified) : userdate(time());
+            \core\task\manager::queue_adhoc_task($task);
 
-            // Susun Email
-            $subject = "Hasil Nilai Kuis: {$quizname} - {$fullname}";
-            $messagehtml = "
-                <h3>Laporan Hasil Kuis Peserta</h3>
-                <p><strong>Nama Peserta:</strong> {$fullname} ({$user->email})</p>
-                <p><strong>Pelatihan / Kursus:</strong> {$coursename}</p>
-                <p><strong>Kuis:</strong> {$quizname}</p>
-                <p><strong>Skor yang Diperoleh:</strong> {$finalgrade} / {$maxgrade}</p>
-                <p><strong>Waktu Penilaian:</strong> {$gradedtime}</p>
-            ";
-            $messagetext = html_to_text($messagehtml);
-            $fromuser = core_user::get_noreply_user();
-
-            // 1. Kirim ke Peserta
-            email_to_user($user, $fromuser, $subject, $messagetext, $messagehtml);
-
-            // 2. Kirim ke Atasan
-            if (!empty($supervisor_email) && validate_email(trim($supervisor_email))) {
-                $supervisor = new \stdClass();
-                $supervisor->email = trim($supervisor_email);
-                $supervisor->firstname = 'Atasan /';
-                $supervisor->lastname = 'Supervisor';
-                $supervisor->id = -99;
-                $supervisor->maildisplay = 1;
-                $supervisor->mailformat = 1;
-
-                email_to_user($supervisor, $fromuser, $subject, $messagetext, $messagehtml);
-            }
         } catch (\Throwable $e) {
             debugging('Error in local_grade_notifier: ' . $e->getMessage(), DEBUG_DEVELOPER);
         }

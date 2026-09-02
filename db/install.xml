@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<XMLDB PATH="local/grade_notifier/db" VERSION="20260902" COMMENT="XMLDB file for local_grade_notifier">
+  <TABLES>
+    <TABLE NAME="local_grade_notifier_logs" COMMENT="Logs of sent grade notifications to prevent duplicate emails">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="ID user peserta"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="ID kursus"/>
+        <FIELD NAME="quizid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="ID modul kuis"/>
+        <FIELD NAME="gradeitemid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="ID grade item"/>
+        <FIELD NAME="finalgrade" TYPE="number" LENGTH="10" DECIMALS="5" NOTNULL="false" SEQUENCE="false" COMMENT="Nilai final yang dinotifikasi"/>
+        <FIELD NAME="timenotified" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Waktu notifikasi dikirim"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="user_quiz_grade" UNIQUE="false" FIELDS="userid, quizid, gradeitemid"/>
+      </INDEXES>
+    </TABLE>
+  </TABLES>
+</XMLDB>
